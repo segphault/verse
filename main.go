@@ -8,6 +8,7 @@ import (
     "regexp"
     "github.com/methane/rproxy"
 	"net/http"
+	"os"
 )
 
 type Regex struct {
@@ -42,23 +43,35 @@ type Server struct {
 	Static string
 }
 
+func (server Server) FindMatchingRule(host string) (Rule, error) {
+	for _, rule := range server.Rules {
+		if rule.Pattern.MatchString(host) {
+			return rule, nil
+		}
+	}
+	
+	return Rule{}, fmt.Errorf("Couldn't find a rule to match %s", host)
+}
+
+func (rule Rule) Apply(req *http.Request) {
+	req.URL.Host = rule.Pattern.ReplaceAllString(req.Host, rule.Binding)
+	req.URL.Scheme = "http"
+	
+	if rule.Scheme != "" {
+		req.URL.Scheme = rule.Scheme
+	}
+}
+
 func (server Server) Run() {
 	if server.Static != "" {
 		fs := http.FileServer(http.Dir(server.Static))
 		http.ListenAndServe(fmt.Sprintf(":%d", server.Port), fs)
 	} else {
 		director := func(req *http.Request) {
-			for _, rule := range server.Rules {
-				if rule.Pattern.MatchString(req.Host) {
-					req.URL.Host = rule.Pattern.ReplaceAllString(req.Host, rule.Binding)
-					fmt.Println(fmt.Sprintf("%s -> %s", req.Host, req.URL.Host))
-					
-					if rule.Scheme != "" {
-						req.URL.Scheme = rule.Scheme
-					} else {
-						req.URL.Scheme = "http"
-					}
-				}
+			if rule, err := server.FindMatchingRule(req.Host); err == nil {
+				rule.Apply(req)
+			} else {
+				log.Print(err)
 			}
 		}
 		
@@ -68,15 +81,18 @@ func (server Server) Run() {
 }
 
 func main() {
-	file, err := ioutil.ReadFile("config.json")
-	if err != nil {
+	if len(os.Args[1:]) < 1 {
+		log.Fatal("Must specify configuration file")
+	}
+	
+	file, ferr := ioutil.ReadFile(os.Args[1])
+	if ferr != nil {
 		log.Fatal("Failed to read configuration")
 	}
 	
 	var config Config
-	err = json.Unmarshal(file, &config)
-	if err != nil {
-		log.Fatal("Failed to parse JSON:", err)
+	if jerr := json.Unmarshal(file, &config); jerr != nil {
+		log.Fatal("Failed to parse JSON:", jerr)
 	}
 
 	for _, server := range config {
