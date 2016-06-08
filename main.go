@@ -5,45 +5,27 @@ import (
     "encoding/json"
     "io/ioutil"
     "log"
-    "regexp"
     "github.com/methane/rproxy"
 	"net/http"
 	"os"
 )
 
-type Regex struct {
-	*regexp.Regexp
-}
-
-func (r *Regex) UnmarshalJSON(b []byte) error {
-	str := new(string)
-	json.Unmarshal(b, str)
-	
-	compiled, err := regexp.Compile(*str)
-	
-	if err != nil {
-		return err
-	}
-	
-	r.Regexp = compiled
-	return nil
-}
-
-type Config []Server
+type Config []ServerConfig
 
 type Rule struct {
 	Pattern Regex
 	Binding string
-	Scheme string
+	Certs Certificates
 }
 
-type Server struct {
+type ServerConfig struct {
 	Port int
 	Rules []Rule
 	Static string
+	TLS bool
 }
 
-func (server Server) FindMatchingRule(host string) (Rule, error) {
+func (server ServerConfig) FindMatchingRule(host string) (Rule, error) {
 	for _, rule := range server.Rules {
 		if rule.Pattern.MatchString(host) {
 			return rule, nil
@@ -53,30 +35,38 @@ func (server Server) FindMatchingRule(host string) (Rule, error) {
 	return Rule{}, fmt.Errorf("Couldn't find a rule to match %s", host)
 }
 
-func (rule Rule) Apply(req *http.Request) {
-	req.URL.Host = rule.Pattern.ReplaceAllString(req.Host, rule.Binding)
-	req.URL.Scheme = "http"
-	
-	if rule.Scheme != "" {
-		req.URL.Scheme = rule.Scheme
+func (server ServerConfig) GetCertificates() []Certificates {
+	var certs []Certificates
+	for _, rule := range server.Rules {
+		if rule.Certs.KeyFile != "" {
+			certs = append(certs, rule.Certs)
+		}
 	}
+	
+	return certs
 }
 
-func (server Server) Run() {
-	if server.Static != "" {
-		fs := http.FileServer(http.Dir(server.Static))
-		http.ListenAndServe(fmt.Sprintf(":%d", server.Port), fs)
-	} else {
-		director := func(req *http.Request) {
-			if rule, err := server.FindMatchingRule(req.Host); err == nil {
-				rule.Apply(req)
-			} else {
-				log.Print(err)
-			}
+func (config ServerConfig) Run() {
+	director := func(req *http.Request) {
+		if rule, err := config.FindMatchingRule(req.Host); err == nil {
+			req.URL.Host = rule.Pattern.ReplaceAllString(req.Host, rule.Binding)
+			req.URL.Scheme = "http"
 		}
-		
-		proxy := &rproxy.ReverseProxy{Director: director}
-		http.ListenAndServe(fmt.Sprintf(":%d", server.Port), proxy)
+	}
+	
+	server := &http.Server{
+		Addr: fmt.Sprintf(":%d", config.Port),
+		Handler: &rproxy.ReverseProxy{Director: director},
+	}
+	
+	if config.Static != "" {
+		server.Handler = http.FileServer(http.Dir(config.Static))
+	}
+	
+	if config.TLS == true {
+		ListenAndServeTLSSNI(server, config.GetCertificates())
+	} else {
+		server.ListenAndServe()
 	}
 }
 
@@ -87,7 +77,7 @@ func main() {
 	
 	file, ferr := ioutil.ReadFile(os.Args[1])
 	if ferr != nil {
-		log.Fatal("Failed to read configuration")
+		log.Fatal("Failed to read configuration:", ferr)
 	}
 	
 	var config Config
