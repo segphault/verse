@@ -6,11 +6,16 @@ import (
     "io/ioutil"
     "log"
     "github.com/methane/rproxy"
-	"net/http"
-	"os"
+    "net/http"
+    "os"
+    "rsc.io/letsencrypt"
+    "crypto/tls"
 )
 
-type Config []ServerConfig
+type Config struct {
+	Servers []ServerConfig
+	Certs string
+}
 
 type Rule struct {
 	Pattern Regex
@@ -46,7 +51,7 @@ func (server ServerConfig) GetCertificates() []Certificates {
 	return certs
 }
 
-func (config ServerConfig) Run() {
+func (config ServerConfig) Run(certManager letsencrypt.Manager) {
 	director := func(req *http.Request) {
 		if rule, err := config.FindMatchingRule(req.Host); err == nil {
 			req.URL.Host = rule.Pattern.ReplaceAllString(req.Host, rule.Binding)
@@ -57,6 +62,9 @@ func (config ServerConfig) Run() {
 	server := &http.Server{
 		Addr: fmt.Sprintf(":%d", config.Port),
 		Handler: &rproxy.ReverseProxy{Director: director},
+		TLSConfig: &tls.Config{
+			GetCertificate: certManager.GetCertificate,
+		},
 	}
 	
 	if config.Static != "" {
@@ -64,7 +72,7 @@ func (config ServerConfig) Run() {
 	}
 	
 	if config.TLS == true {
-		ListenAndServeTLSSNI(server, config.GetCertificates())
+		server.ListenAndServeTLS("", "")
 	} else {
 		server.ListenAndServe()
 	}
@@ -84,9 +92,16 @@ func main() {
 	if jerr := json.Unmarshal(file, &config); jerr != nil {
 		log.Fatal("Failed to parse JSON:", jerr)
 	}
+	
+	var certManager letsencrypt.Manager
+	if config.Certs != "" {
+		if err := certManager.CacheFile(config.Certs); err != nil {
+			log.Fatal(err)
+		}
+	}
 
-	for _, server := range config {
-		go server.Run()
+	for _, server := range config.Servers {
+		go server.Run(certManager)
 	}
 	
 	select {}
