@@ -20,7 +20,6 @@ type Config struct {
 type Rule struct {
 	Pattern Regex
 	Binding string
-	Certs Certificates
 }
 
 type ServerConfig struct {
@@ -38,17 +37,6 @@ func (server ServerConfig) FindMatchingRule(host string) (Rule, error) {
 	}
 	
 	return Rule{}, fmt.Errorf("Couldn't find a rule to match %s", host)
-}
-
-func (server ServerConfig) GetCertificates() []Certificates {
-	var certs []Certificates
-	for _, rule := range server.Rules {
-		if rule.Certs.KeyFile != "" {
-			certs = append(certs, rule.Certs)
-		}
-	}
-	
-	return certs
 }
 
 func (config ServerConfig) Run(certManager letsencrypt.Manager) {
