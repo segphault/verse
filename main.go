@@ -49,7 +49,7 @@ func (config ServerConfig) Run(certManager letsencrypt.Manager) {
 	
 	server := &http.Server{
 		Addr: fmt.Sprintf(":%d", config.Port),
-		Handler: &rproxy.ReverseProxy{Director: director},
+		Handler: &rproxy.ReverseProxy{Director: director, FlushInterval: 500},
 		TLSConfig: &tls.Config{
 			GetCertificate: certManager.GetCertificate,
 		},
