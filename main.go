@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/methane/rproxy"
 	"rsc.io/letsencrypt"
@@ -19,7 +20,7 @@ type Config struct {
 }
 
 type Rule struct {
-	Pattern Regex
+	Pattern string
 	Binding string
 }
 
@@ -30,33 +31,55 @@ type ServerConfig struct {
 	TLS    bool
 }
 
-func (server ServerConfig) FindMatchingRule(host string) (Rule, error) {
+func (server ServerConfig) FindMatchingRule(host string) (string, error) {
 	for _, rule := range server.Rules {
-		if rule.Pattern.MatchString(host) {
-			return rule, nil
+		if len(rule.Pattern) > 0 &&
+			rule.Pattern[0] == '.' &&
+			strings.HasSuffix(host, rule.Pattern) {
+			prefix := host[0 : len(host)-len(rule.Pattern)]
+			if len(rule.Binding) > 0 && rule.Binding[0] == '.' {
+				// e.g., host=www.example.com, pattern=.example.com, binding=.example,
+				// then return www.example
+				return prefix + rule.Binding, nil
+			} else {
+				// e.g., host = www.example.com, pattern .example.com, binding=example
+				// then return example
+				return rule.Binding, nil
+			}
+		} else if rule.Pattern == host {
+			// e.g., host = www.example.com, pattern = www.example.com, binding=example
+			// then return example
+			return rule.Binding, nil
 		}
 	}
 
-	return Rule{}, fmt.Errorf("Couldn't find a rule to match %s", host)
+	return "", fmt.Errorf("Couldn't find a rule to match %s", host)
 }
 
 func (config ServerConfig) Run(certManager letsencrypt.Manager) {
 	director := func(req *http.Request) {
-		if rule, err := config.FindMatchingRule(req.Host); err == nil {
-			req.URL.Host = rule.Pattern.ReplaceAllString(req.Host, rule.Binding)
+		if binding, err := config.FindMatchingRule(req.Host); err == nil {
+			req.URL.Host = binding
 			req.URL.Scheme = "http"
+			return
 		}
+		// TODO intercept request or direct to error responder if we fall
+		// through to here.
 	}
 
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", config.Port),
-		Handler: &rproxy.ReverseProxy{Director: director, FlushInterval: 500},
+		Addr: fmt.Sprintf(":%d", config.Port),
 		TLSConfig: &tls.Config{
 			GetCertificate: certManager.GetCertificate,
 		},
 	}
 
-	if config.Static != "" {
+	if config.Static == "" {
+		server.Handler = &rproxy.ReverseProxy{
+			Director:      director,
+			FlushInterval: 500,
+		}
+	} else {
 		server.Handler = http.FileServer(http.Dir(config.Static))
 	}
 
